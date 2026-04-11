@@ -252,57 +252,130 @@ def page_my_predictions():
 def page_admin():
     if st.session_state.user['role'] != 'admin':
         st.error("Access denied."); return
+
+    from collections import Counter
+
     st.markdown("<div class='main-title'>🛠️ Admin Dashboard</div>", unsafe_allow_html=True)
+    st.markdown("<p class='subtitle'>System overview, user management and audit logs</p>", unsafe_allow_html=True)
     st.divider()
-    tab1,tab2,tab3 = st.tabs(["👥 User Management","📊 All Predictions","📜 System Logs"])
+
+    # ── Fetch data ──
+    all_users = supabase.table("users").select("id,username,email,role,created_at,is_active").order("created_at", desc=True).execute().data
+    all_preds = supabase.table("predictions").select("*").order("timestamp", desc=True).execute().data
+    all_logs  = supabase.table("logs").select("*").order("timestamp", desc=True).limit(200).execute().data
+
+    counts = Counter([p['predicted_class'] for p in all_preds]) if all_preds else {}
+    total_users = len([u for u in all_users if u['role'] != 'admin'])
+    active_users = len([u for u in all_users if u['is_active'] and u['role'] != 'admin'])
+
+    # ── Summary metrics ──
+    st.markdown("### 📈 Overview")
+    m1, m2, m3, m4, m5, m6 = st.columns(6)
+    m1.metric("👥 Total Users",       total_users)
+    m2.metric("✅ Active Users",       active_users)
+    m3.metric("📊 Total Predictions", len(all_preds))
+    m4.metric("🔴 Blight",            counts.get('Blight', 0))
+    m5.metric("🟠 Common Rust",       counts.get('Common_Rust', 0))
+    m6.metric("⚫ Gray Leaf Spot",    counts.get('Gray_Leaf_Spot', 0))
+
+    st.markdown("<br>", unsafe_allow_html=True)
+
+    # ── Per-class breakdown bar ──
+    if all_preds:
+        st.markdown("### 🌽 Predictions by Disease Class")
+        total = len(all_preds)
+        bar_cols = st.columns(4)
+        for i, cls in enumerate(CLASS_NAMES):
+            info = DISEASE_INFO[cls]
+            cnt = counts.get(cls, 0)
+            pct = round(cnt / total * 100, 1) if total else 0
+            bar_cols[i].markdown(f"""
+            <div style="background:{info['color']}22;border-left:4px solid {info['color']};border-radius:8px;padding:0.8rem 1rem;">
+                <div style="font-size:1.5rem;">{info['emoji']}</div>
+                <div style="font-weight:600;color:{info['color']};">{cls.replace('_',' ')}</div>
+                <div style="font-size:1.4rem;font-weight:700;color:#1a3a1a;">{cnt}</div>
+                <div style="font-size:0.8rem;color:#888;">{pct}% of total</div>
+            </div>
+            """, unsafe_allow_html=True)
+
+    st.markdown("<br>", unsafe_allow_html=True)
+
+    # ── Tabs ──
+    tab1, tab2, tab3 = st.tabs(["👥 User Management", "📋 Prediction History", "📜 Audit Logs"])
+
     with tab1:
-        users = supabase.table("users").select("id,username,email,role,created_at,is_active").order("created_at", desc=True).execute().data
-        st.markdown(f"**Total users: {len(users)}**")
-        for u in users:
-            c1,c2,c3,c4 = st.columns([2,2,1,1])
-            with c1: st.markdown(f"**{u['username']}** ({u['email']})")
-            with c2: st.markdown(f"Role: `{u['role']}` | Joined: {str(u['created_at'])[:10]}")
+        st.markdown(f"**{total_users} registered user(s)**")
+        st.markdown("<br>", unsafe_allow_html=True)
+        for u in all_users:
+            if u['username'] == 'admin': continue
+            c1, c2, c3, c4 = st.columns([2, 2, 1, 1])
+            with c1: st.markdown(f"**{u['username']}** <span style='font-size:0.8rem;color:#888;'>({u['email']})</span>", unsafe_allow_html=True)
+            with c2: st.markdown(f"Role: `{u['role']}` &nbsp;|&nbsp; Joined: {str(u['created_at'])[:10]}", unsafe_allow_html=True)
             with c3: st.markdown("✅ Active" if u['is_active'] else "❌ Disabled")
             with c4:
-                if u['username'] != 'admin':
-                    if st.button("Disable" if u['is_active'] else "Enable", key=f"tog_{u['id']}"):
-                        new_s = not u['is_active']
-                        supabase.table("users").update({"is_active": new_s}).eq("id", u['id']).execute()
-                        log_action(st.session_state.user['id'], st.session_state.user['username'], "USER_STATUS_CHANGE", f"{u['username']} → {'enabled' if new_s else 'disabled'}")
-                        st.rerun()
+                if st.button("Disable" if u['is_active'] else "Enable", key=f"tog_{u['id']}"):
+                    new_s = not u['is_active']
+                    supabase.table("users").update({"is_active": new_s}).eq("id", u['id']).execute()
+                    log_action(st.session_state.user['id'], st.session_state.user['username'],
+                               "USER_STATUS_CHANGE", f"{u['username']} → {'enabled' if new_s else 'disabled'}")
+                    st.rerun()
+
     with tab2:
-        preds = supabase.table("predictions").select("*").order("timestamp", desc=True).execute().data
-        st.markdown(f"**Total predictions: {len(preds)}**")
-        if preds:
-            from collections import Counter
-            counts = Counter([p['predicted_class'] for p in preds])
-            cols = st.columns(4)
-            for i,cls in enumerate(CLASS_NAMES):
-                cols[i].metric(f"{DISEASE_INFO[cls]['emoji']} {cls.replace('_',' ')}", counts.get(cls,0))
-        st.markdown("---")
-        for p in preds:
+        st.markdown(f"**{len(all_preds)} total prediction(s)**")
+        if not all_preds:
+            st.info("No predictions yet.")
+        for p in all_preds:
             info = DISEASE_INFO.get(p['predicted_class'], DISEASE_INFO['Healthy'])
-            st.markdown(f'<div class="log-row">{info["emoji"]} <strong>{p["predicted_class"].replace("_"," ")}</strong> · Confidence: <strong>{p["confidence"]:.1f}%</strong> · File: {p["filename"]} · User: <strong>{p["username"]}</strong> · <span style="color:#888;">{str(p["timestamp"])[:19]}</span></div>', unsafe_allow_html=True)
+            st.markdown(
+                f'<div class="log-row">{info["emoji"]} <strong>{p["predicted_class"].replace("_"," ")}</strong>'
+                f' &nbsp;·&nbsp; Confidence: <strong>{p["confidence"]:.1f}%</strong>'
+                f' &nbsp;·&nbsp; File: {p["filename"]}'
+                f' &nbsp;·&nbsp; User: <strong>{p["username"]}</strong>'
+                f' &nbsp;·&nbsp; <span style="color:#888;">{str(p["timestamp"])[:19]}</span></div>',
+                unsafe_allow_html=True)
+
     with tab3:
-        logs = supabase.table("logs").select("*").order("timestamp", desc=True).limit(200).execute().data
-        st.markdown("**Recent logs (last 200):**")
-        for log in logs:
+        st.markdown("**Recent audit logs (last 200):**")
+        if not all_logs:
+            st.info("No logs yet.")
+        for log in all_logs:
             details_html = f' &nbsp;·&nbsp; {log["details"]}' if log.get("details") else ""
-            st.markdown(f'<div class="log-row">🕐 <span style="color:#888;">{str(log["timestamp"])[:19]}</span> &nbsp;·&nbsp; <strong>{log["username"]}</strong> &nbsp;·&nbsp; <code>{log["action"]}</code>{details_html}</div>', unsafe_allow_html=True)
+            st.markdown(
+                f'<div class="log-row">🕐 <span style="color:#888;">{str(log["timestamp"])[:19]}</span>'
+                f' &nbsp;·&nbsp; <strong>{log["username"]}</strong>'
+                f' &nbsp;·&nbsp; <code>{log["action"]}</code>{details_html}</div>',
+                unsafe_allow_html=True)
 
 # ── Router ────────────────────────────────────────────────────────────────────
 if not st.session_state.logged_in:
     if st.session_state.page == 'register': page_register()
     else: page_login()
 else:
+    is_admin = st.session_state.user['role'] == 'admin'
+
+    # Redirect admin away from user-only pages
+    if is_admin and st.session_state.page in ('dashboard', 'my_predictions'):
+        st.session_state.page = 'admin'
+
     with st.sidebar:
         st.divider()
         st.markdown("### Navigation")
-        if st.button("🔬 Classify Image",  use_container_width=True): st.session_state.page='dashboard';      st.rerun()
-        if st.button("📋 My Predictions",  use_container_width=True): st.session_state.page='my_predictions'; st.rerun()
-        if st.session_state.user['role']=='admin':
-            if st.button("🛠️ Admin Panel", use_container_width=True): st.session_state.page='admin';         st.rerun()
-    if   st.session_state.page=='dashboard':      page_dashboard()
-    elif st.session_state.page=='my_predictions': page_my_predictions()
-    elif st.session_state.page=='admin':          page_admin()
-    else:                                         page_dashboard()
+        if not is_admin:
+            if st.button("🔬 Classify Image", use_container_width=True):
+                st.session_state.page = 'dashboard'; st.rerun()
+            if st.button("📋 My Predictions", use_container_width=True):
+                st.session_state.page = 'my_predictions'; st.rerun()
+        else:
+            if st.button("🛠️ Admin Dashboard", use_container_width=True):
+                st.session_state.page = 'admin'; st.rerun()
+
+    if st.session_state.page == 'dashboard' and not is_admin:
+        page_dashboard()
+    elif st.session_state.page == 'my_predictions' and not is_admin:
+        page_my_predictions()
+    elif st.session_state.page == 'admin' and is_admin:
+        page_admin()
+    elif is_admin:
+        page_admin()
+    else:
+        page_dashboard()
