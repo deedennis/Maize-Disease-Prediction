@@ -1185,15 +1185,7 @@ def page_dashboard():
         )
 
         st.markdown("---")
-        base_name = f"maizeguard_{uploaded.name.split('.')[0]}_{ts.replace(' ','_').replace(':','-')}"
-        dl1, dl2 = st.columns(2)
-        with dl1:
-            st.download_button(
-                "📄 Download Report (.txt)",
-                data=report,
-                file_name=f"{base_name}.txt",
-                mime="text/plain",
-                use_container_width=True,
+        
             )
         with dl2:
             with st.spinner("Building PDF…"):
