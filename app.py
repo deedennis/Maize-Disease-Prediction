@@ -778,8 +778,8 @@ def render_recommendations(pred_class: str, info: dict):
         """, unsafe_allow_html=True)
         st.markdown('</div>', unsafe_allow_html=True)
 
-# ── PDF REPORT GENERATOR ─────────────────────────────────────────────────────
-def generate_pdf_report(username, filename, pred_class, confidence, all_probs, info, ts, uploaded_img=None):
+ # ── PDF REPORT GENERATOR ─────────────────────────────────────────────────────
+    def generate_pdf_report(username, filename, pred_class, confidence, all_probs, info, ts, uploaded_img=None):
     """Build a styled PDF report and return bytes."""
     buf = io.BytesIO()
     page_w, page_h = A4
