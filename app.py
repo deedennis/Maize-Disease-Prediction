@@ -47,8 +47,12 @@ def hash_password(pw):
     return hashlib.sha256(pw.encode()).hexdigest()
 
 def get_user(username, hashed_pw):
-    res = supabase.table("users").select("*").eq("username", username).eq("password", hashed_pw).eq("is_active", True).execute()
-    return res.data[0] if res.data else None
+    res = supabase.table("users").select("*").eq("username", username).eq("password", hashed_pw).execute()
+    if res.data:
+        user = res.data[0]
+        if user.get("is_active") in (True, 1, "true", "True"):
+            return user
+    return None
 
 def get_user_by_username(username):
     res = supabase.table("users").select("*").eq("username", username).execute()
