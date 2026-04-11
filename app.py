@@ -778,8 +778,8 @@ def render_recommendations(pred_class: str, info: dict):
         """, unsafe_allow_html=True)
         st.markdown('</div>', unsafe_allow_html=True)
 
- # ── PDF REPORT GENERATOR ─────────────────────────────────────────────────────
-    def generate_pdf_report(username, filename, pred_class, confidence, all_probs, info, ts, uploaded_img=None):
+# ── PDF REPORT GENERATOR ─────────────────────────────────────────────────────
+def generate_pdf_report(username, filename, pred_class, confidence, all_probs, info, ts, uploaded_img=None):
     """Build a styled PDF report and return bytes."""
     buf = io.BytesIO()
     page_w, page_h = A4
@@ -944,54 +944,6 @@ def render_recommendations(pred_class: str, info: dict):
             pass   # silently skip if image fails
 
     # ═══════════════════════════════════════════════
-    # CLASS PROBABILITIES
-    # ═══════════════════════════════════════════════
-    story.append(HRFlowable(width=W, thickness=0.5, color=C_BORDER))
-    story.append(Spacer(1, 6))
-    story.append(Paragraph("All Class Probabilities", st_section))
-
-    prob_rows = [[ Paragraph("Disease Class", st_tbl_hdr),
-                   Paragraph("Confidence", st_tbl_hdr),
-                   Paragraph("Visual Bar", st_tbl_hdr) ]]
-    for cls, prob in sorted(all_probs.items(), key=lambda x: -x[1]):
-        bar_full  = int((W * 0.42) * prob / 100)
-        bar_color = info['color'] if cls == pred_class else "#cccccc"
-        bar_cell  = Table(
-            [['']], colWidths=[bar_full or 2]
-        )
-        bar_cell.setStyle(TableStyle([
-            ('BACKGROUND',(0,0),(-1,-1), colors.HexColor(bar_color)),
-            ('TOPPADDING',(0,0),(-1,-1), 5),
-            ('BOTTOMPADDING',(0,0),(-1,-1), 5),
-        ]))
-        is_pred = cls == pred_class
-        prob_rows.append([
-            Paragraph(f"<b>{cls.replace('_',' ')}</b>" if is_pred else cls.replace('_',' '),
-                      st_tbl_cell_b if is_pred else st_tbl_cell),
-            Paragraph(f"<b>{prob:.1f}%</b>" if is_pred else f"{prob:.1f}%",
-                      sty('ProbPct', fontSize=9,
-                          textColor=C_DIS if is_pred else C_MUTED,
-                          fontName='Helvetica-Bold' if is_pred else 'Helvetica',
-                          alignment=TA_CENTER)),
-            bar_cell,
-        ])
-
-    prob_tbl = Table(prob_rows, colWidths=[W*0.30, W*0.18, W*0.52])
-    prob_tbl.setStyle(TableStyle([
-        ('BACKGROUND',   (0,0),(-1, 0), C_MID),
-        ('ROWBACKGROUNDS',(0,1),(-1,-1),[C_WHITE, C_LIGHT]),
-        ('GRID',         (0,0),(-1,-1), 0.4, C_BORDER),
-        ('VALIGN',       (0,0),(-1,-1), 'MIDDLE'),
-        ('ALIGN',        (1,0),(1,-1), 'CENTER'),
-        ('LEFTPADDING',  (0,0),(-1,-1), 7),
-        ('RIGHTPADDING', (0,0),(-1,-1), 4),
-        ('TOPPADDING',   (0,0),(-1,-1), 5),
-        ('BOTTOMPADDING',(0,0),(-1,-1), 5),
-    ]))
-    story.append(prob_tbl)
-    story.append(Spacer(1, 10))
-
-    # ═══════════════════════════════════════════════
     # FIELD MANAGEMENT RECOMMENDATIONS
     # ═══════════════════════════════════════════════
     story.append(HRFlowable(width=W, thickness=0.5, color=C_BORDER))
@@ -1134,10 +1086,6 @@ def page_dashboard():
 
             st.markdown(f"**ℹ️ About this condition:** {info['description']}")
 
-            st.markdown("**📊 All Class Probabilities**")
-            for cls, prob in sorted(all_probs.items(), key=lambda x: -x[1]):
-                st.progress(int(prob), text=f"{cls.replace('_',' ')}: {prob:.1f}%")
-
         # ── Full-width recommendations ──
         st.markdown("<br>", unsafe_allow_html=True)
         render_recommendations(pred_class, info)
@@ -1153,59 +1101,26 @@ def page_dashboard():
             "PREDICTION", f"{uploaded.name} → {pred_class} ({confidence:.1f}%)"
         )
 
-        # Build text report
-        fung_block = ""
-        if info.get('fungicides'):
-            fung_block = "\nFUNGICIDE RECOMMENDATIONS\n--------------------------\n"
-            for f in info['fungicides']:
-                fung_block += f"  {f['name']} ({f['type']})\n    Rate: {f['rate']}\n    Timing: {f['timing']}\n\n"
-
-        rec_block = "\nFIELD MANAGEMENT STEPS\n-----------------------\n"
-        for icon, step in info['recommendations']:
-            rec_block += f"  • {step}\n"
-
-        report = (
-            f"MAIZEGUARD AI — DISEASE CLASSIFICATION REPORT\n"
-            f"==============================================\n"
-            f"Date/Time   : {ts}\n"
-            f"User        : {st.session_state.user['username']}\n"
-            f"File        : {uploaded.name}\n\n"
-            f"RESULT\n------\n"
-            f"Predicted Disease : {pred_class.replace('_',' ')}\n"
-            f"Confidence        : {confidence:.2f}%\n"
-            f"Severity Level    : {info['severity']}\n\n"
-            f"Description:\n{info['description']}\n\n"
-            f"ALL CLASS PROBABILITIES\n-----------------------\n"
-            + "\n".join([f"  {k.replace('_',' '):<20}: {v:.2f}%" for k,v in sorted(all_probs.items(), key=lambda x:-x[1])])
-            + rec_block
-            + fung_block
-            + f"\nIPM NOTE\n--------\n  {info['ipm_note']}\n\n"
-            f"--------------------------------------------------\n"
-            f"Generated by MaizeGuard AI | {ts}\n"
-        )
-
         st.markdown("---")
-        
+        base_name = f"maizeguard_{uploaded.name.split('.')[0]}_{ts.replace(' ','_').replace(':','-')}"
+        with st.spinner("Building PDF…"):
+            pdf_bytes = generate_pdf_report(
+                username=st.session_state.user['username'],
+                filename=uploaded.name,
+                pred_class=pred_class,
+                confidence=confidence,
+                all_probs=all_probs,
+                info=info,
+                ts=ts,
+                uploaded_img=img,
             )
-        with dl2:
-            with st.spinner("Building PDF…"):
-                pdf_bytes = generate_pdf_report(
-                    username=st.session_state.user['username'],
-                    filename=uploaded.name,
-                    pred_class=pred_class,
-                    confidence=confidence,
-                    all_probs=all_probs,
-                    info=info,
-                    ts=ts,
-                    uploaded_img=img,
-                )
-            st.download_button(
-                "📥 Download Report (.pdf)",
-                data=pdf_bytes,
-                file_name=f"{base_name}.pdf",
-                mime="application/pdf",
-                use_container_width=True,
-            )
+        st.download_button(
+            "📥 Download Report (.pdf)",
+            data=pdf_bytes,
+            file_name=f"{base_name}.pdf",
+            mime="application/pdf",
+            use_container_width=True,
+        )
 
 # ── MY PREDICTIONS PAGE ───────────────────────────────────────────────────────
 def page_my_predictions():
