@@ -283,7 +283,8 @@ def page_admin():
         logs = supabase.table("logs").select("*").order("timestamp", desc=True).limit(200).execute().data
         st.markdown("**Recent logs (last 200):**")
         for log in logs:
-            st.markdown(f'<div class="log-row">🕐 <span style="color:#888;">{str(log["timestamp"])[:19]}</span> &nbsp;·&nbsp; <strong>{log["username"]}</strong> &nbsp;·&nbsp; <code>{log["action"]}</code>{f" &nbsp;·&nbsp; {log[\"details\"]}" if log.get("details") else ""}</div>', unsafe_allow_html=True)
+            details_html = f' &nbsp;·&nbsp; {log["details"]}' if log.get("details") else ""
+            st.markdown(f'<div class="log-row">🕐 <span style="color:#888;">{str(log["timestamp"])[:19]}</span> &nbsp;·&nbsp; <strong>{log["username"]}</strong> &nbsp;·&nbsp; <code>{log["action"]}</code>{details_html}</div>', unsafe_allow_html=True)
 
 # ── Router ────────────────────────────────────────────────────────────────────
 if not st.session_state.logged_in:
