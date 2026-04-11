@@ -3,12 +3,25 @@ import hashlib
 import os
 import datetime
 import json
+import io
 from PIL import Image
 import torch
 import torch.nn as nn
 from torchvision import transforms
 import numpy as np
 from supabase import create_client, Client
+
+# reportlab imports for PDF generation
+from reportlab.lib.pagesizes import A4
+from reportlab.lib import colors
+from reportlab.lib.units import mm
+from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+from reportlab.lib.enums import TA_CENTER, TA_LEFT, TA_RIGHT
+from reportlab.platypus import (
+    SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle,
+    HRFlowable, KeepTogether
+)
+from reportlab.platypus import Image as RLImage
 
 # ── Page config ───────────────────────────────────────────────────────────────
 st.set_page_config(page_title="MaizeGuard AI", page_icon="🌽", layout="wide", initial_sidebar_state="expanded")
@@ -765,6 +778,308 @@ def render_recommendations(pred_class: str, info: dict):
         """, unsafe_allow_html=True)
         st.markdown('</div>', unsafe_allow_html=True)
 
+# ── PDF REPORT GENERATOR ─────────────────────────────────────────────────────
+def generate_pdf_report(username, filename, pred_class, confidence, all_probs, info, ts, uploaded_img=None):
+    """Build a styled PDF report and return bytes."""
+    buf = io.BytesIO()
+    page_w, page_h = A4
+    margin = 18 * mm
+
+    doc = SimpleDocTemplate(
+        buf,
+        pagesize=A4,
+        leftMargin=margin, rightMargin=margin,
+        topMargin=14 * mm, bottomMargin=14 * mm,
+        title="MaizeGuard AI Report",
+        author="MaizeGuard AI",
+    )
+
+    # ── Colour palette ──
+    C_DARK   = colors.HexColor("#0d2b12")
+    C_MID    = colors.HexColor("#1a5c24")
+    C_ACCENT = colors.HexColor("#3a9e4f")
+    C_GOLD   = colors.HexColor("#c9a84c")
+    C_LIGHT  = colors.HexColor("#e8f5e8")
+    C_MUTED  = colors.HexColor("#5a7a5a")
+    C_WHITE  = colors.white
+    C_BORDER = colors.HexColor("#d4e6d4")
+
+    # disease colour
+    dis_hex  = info['color']
+    C_DIS    = colors.HexColor(dis_hex)
+
+    # ── Styles ──
+    base = getSampleStyleSheet()
+
+    def sty(name, parent='Normal', **kw):
+        s = ParagraphStyle(name, parent=base[parent], **kw)
+        return s
+
+    st_header_name = sty('HdrName', fontSize=22, textColor=C_WHITE,
+                         fontName='Helvetica-Bold', leading=26, alignment=TA_LEFT)
+    st_header_sub  = sty('HdrSub',  fontSize=9,  textColor=colors.HexColor("#a8d5a8"),
+                         fontName='Helvetica', leading=13, alignment=TA_LEFT)
+    st_section     = sty('Sec',     fontSize=11, textColor=C_DARK,
+                         fontName='Helvetica-Bold', leading=15, spaceAfter=4)
+    st_body        = sty('Body',    fontSize=9,  textColor=C_DARK,
+                         fontName='Helvetica', leading=13, spaceAfter=2)
+    st_muted       = sty('Muted',   fontSize=8,  textColor=C_MUTED,
+                         fontName='Helvetica-Oblique', leading=11)
+    st_tag         = sty('Tag',     fontSize=10, textColor=C_DIS,
+                         fontName='Helvetica-Bold', leading=13, alignment=TA_CENTER)
+    st_conf        = sty('Conf',    fontSize=28, textColor=C_DIS,
+                         fontName='Helvetica-Bold', leading=32, alignment=TA_CENTER)
+    st_dis_name    = sty('DisName', fontSize=20, textColor=C_DARK,
+                         fontName='Helvetica-Bold', leading=24, alignment=TA_CENTER)
+    st_tbl_hdr     = sty('TblHdr',  fontSize=8,  textColor=C_WHITE,
+                         fontName='Helvetica-Bold', leading=11, alignment=TA_CENTER)
+    st_tbl_cell    = sty('TblCell', fontSize=8,  textColor=C_DARK,
+                         fontName='Helvetica', leading=11)
+    st_tbl_cell_b  = sty('TblCellB',fontSize=8, textColor=C_MID,
+                         fontName='Helvetica-Bold', leading=11)
+    st_footer      = sty('Footer',  fontSize=7,  textColor=C_MUTED,
+                         fontName='Helvetica', leading=9, alignment=TA_CENTER)
+
+    story = []
+    W = page_w - 2 * margin   # usable width
+
+    # ═══════════════════════════════════════════════
+    # HEADER BANNER
+    # ═══════════════════════════════════════════════
+    header_data = [[
+        Paragraph("🌽  MaizeGuard AI", st_header_name),
+        Paragraph(f"Disease Classification Report<br/>"
+                  f"<font size='8'>Generated: {ts} &nbsp;|&nbsp; User: {username}</font>",
+                  st_header_sub),
+    ]]
+    header_tbl = Table(header_data, colWidths=[W * 0.38, W * 0.62])
+    header_tbl.setStyle(TableStyle([
+        ('BACKGROUND',  (0, 0), (-1, -1), C_DARK),
+        ('VALIGN',      (0, 0), (-1, -1), 'MIDDLE'),
+        ('LEFTPADDING', (0, 0), (-1, -1), 12),
+        ('RIGHTPADDING',(0, 0), (-1, -1), 12),
+        ('TOPPADDING',  (0, 0), (-1, -1), 12),
+        ('BOTTOMPADDING',(0,0), (-1, -1), 12),
+        ('ROUNDEDCORNERS', [6]),
+    ]))
+    story.append(header_tbl)
+    story.append(Spacer(1, 10))
+
+    # ═══════════════════════════════════════════════
+    # RESULT BOX  (disease name + confidence side by side)
+    # ═══════════════════════════════════════════════
+    emoji_map = {'Blight':'[BLIGHT]','Common_Rust':'[RUST]','Gray_Leaf_Spot':'[GLS]','Healthy':'[OK]'}
+    result_left = [
+        [Paragraph(f"<font color='{dis_hex}'>{info['severity'].upper()} SEVERITY</font>", st_tag)],
+        [Paragraph(pred_class.replace('_', ' '), st_dis_name)],
+        [Spacer(1, 4)],
+        [Paragraph(info['description'], sty('DescStyle', fontSize=8, textColor=C_MUTED,
+                                            fontName='Helvetica', leading=11))],
+    ]
+    result_right = [
+        [Paragraph("Confidence", sty('CL', fontSize=9, textColor=C_MUTED,
+                                     fontName='Helvetica', alignment=TA_CENTER))],
+        [Paragraph(f"{confidence:.1f}%", st_conf)],
+        [Spacer(1, 4)],
+        [Paragraph(f"File: {filename}", sty('FL', fontSize=7, textColor=C_MUTED,
+                                            fontName='Helvetica', alignment=TA_CENTER))],
+    ]
+
+    left_tbl  = Table(result_left,  colWidths=[W * 0.6])
+    right_tbl = Table(result_right, colWidths=[W * 0.36])
+    left_tbl.setStyle(TableStyle([
+        ('BACKGROUND', (0,0),(-1,-1), colors.HexColor(dis_hex + "18")),
+        ('BOX',        (0,0),(-1,-1), 1, C_DIS),
+        ('ROUNDEDCORNERS', [6]),
+        ('LEFTPADDING', (0,0),(-1,-1), 10),
+        ('TOPPADDING',  (0,0),(-1,-1), 8),
+        ('BOTTOMPADDING',(0,0),(-1,-1), 8),
+        ('VALIGN',      (0,0),(-1,-1), 'TOP'),
+    ]))
+    right_tbl.setStyle(TableStyle([
+        ('BACKGROUND', (0,0),(-1,-1), colors.HexColor(dis_hex + "12")),
+        ('BOX',        (0,0),(-1,-1), 1, C_DIS),
+        ('ROUNDEDCORNERS', [6]),
+        ('ALIGN',      (0,0),(-1,-1), 'CENTER'),
+        ('VALIGN',     (0,0),(-1,-1), 'MIDDLE'),
+        ('TOPPADDING', (0,0),(-1,-1), 10),
+        ('BOTTOMPADDING',(0,0),(-1,-1), 10),
+    ]))
+
+    result_row = Table([[left_tbl, Spacer(W * 0.04, 1), right_tbl]],
+                       colWidths=[W * 0.6, W * 0.04, W * 0.36])
+    result_row.setStyle(TableStyle([('VALIGN', (0,0),(-1,-1),'TOP')]))
+    story.append(result_row)
+    story.append(Spacer(1, 10))
+
+    # ═══════════════════════════════════════════════
+    # UPLOADED IMAGE (thumbnail, if provided)
+    # ═══════════════════════════════════════════════
+    if uploaded_img is not None:
+        try:
+            img_copy = uploaded_img.copy().convert("RGB")
+            img_copy.thumbnail((200, 200))
+            img_buf = io.BytesIO()
+            img_copy.save(img_buf, format='JPEG', quality=85)
+            img_buf.seek(0)
+            rl_img = RLImage(img_buf, width=55*mm, height=55*mm)
+            img_caption = Paragraph(
+                f"<b>Analysed Image:</b> {filename}",
+                sty('ImgCap', fontSize=8, textColor=C_MUTED, fontName='Helvetica')
+            )
+            img_tbl = Table([[rl_img, img_caption]],
+                            colWidths=[60*mm, W - 60*mm])
+            img_tbl.setStyle(TableStyle([
+                ('VALIGN',      (0,0),(-1,-1),'MIDDLE'),
+                ('LEFTPADDING', (1,0),(1,0),  10),
+                ('BACKGROUND',  (0,0),(-1,-1), C_LIGHT),
+                ('ROUNDEDCORNERS',[6]),
+                ('BOX',         (0,0),(-1,-1), 0.5, C_BORDER),
+                ('TOPPADDING',  (0,0),(-1,-1), 6),
+                ('BOTTOMPADDING',(0,0),(-1,-1), 6),
+            ]))
+            story.append(img_tbl)
+            story.append(Spacer(1, 10))
+        except Exception:
+            pass   # silently skip if image fails
+
+    # ═══════════════════════════════════════════════
+    # CLASS PROBABILITIES
+    # ═══════════════════════════════════════════════
+    story.append(HRFlowable(width=W, thickness=0.5, color=C_BORDER))
+    story.append(Spacer(1, 6))
+    story.append(Paragraph("All Class Probabilities", st_section))
+
+    prob_rows = [[ Paragraph("Disease Class", st_tbl_hdr),
+                   Paragraph("Confidence", st_tbl_hdr),
+                   Paragraph("Visual Bar", st_tbl_hdr) ]]
+    for cls, prob in sorted(all_probs.items(), key=lambda x: -x[1]):
+        bar_full  = int((W * 0.42) * prob / 100)
+        bar_color = info['color'] if cls == pred_class else "#cccccc"
+        bar_cell  = Table(
+            [['']], colWidths=[bar_full or 2]
+        )
+        bar_cell.setStyle(TableStyle([
+            ('BACKGROUND',(0,0),(-1,-1), colors.HexColor(bar_color)),
+            ('TOPPADDING',(0,0),(-1,-1), 5),
+            ('BOTTOMPADDING',(0,0),(-1,-1), 5),
+        ]))
+        is_pred = cls == pred_class
+        prob_rows.append([
+            Paragraph(f"<b>{cls.replace('_',' ')}</b>" if is_pred else cls.replace('_',' '),
+                      st_tbl_cell_b if is_pred else st_tbl_cell),
+            Paragraph(f"<b>{prob:.1f}%</b>" if is_pred else f"{prob:.1f}%",
+                      sty('ProbPct', fontSize=9,
+                          textColor=C_DIS if is_pred else C_MUTED,
+                          fontName='Helvetica-Bold' if is_pred else 'Helvetica',
+                          alignment=TA_CENTER)),
+            bar_cell,
+        ])
+
+    prob_tbl = Table(prob_rows, colWidths=[W*0.30, W*0.18, W*0.52])
+    prob_tbl.setStyle(TableStyle([
+        ('BACKGROUND',   (0,0),(-1, 0), C_MID),
+        ('ROWBACKGROUNDS',(0,1),(-1,-1),[C_WHITE, C_LIGHT]),
+        ('GRID',         (0,0),(-1,-1), 0.4, C_BORDER),
+        ('VALIGN',       (0,0),(-1,-1), 'MIDDLE'),
+        ('ALIGN',        (1,0),(1,-1), 'CENTER'),
+        ('LEFTPADDING',  (0,0),(-1,-1), 7),
+        ('RIGHTPADDING', (0,0),(-1,-1), 4),
+        ('TOPPADDING',   (0,0),(-1,-1), 5),
+        ('BOTTOMPADDING',(0,0),(-1,-1), 5),
+    ]))
+    story.append(prob_tbl)
+    story.append(Spacer(1, 10))
+
+    # ═══════════════════════════════════════════════
+    # FIELD MANAGEMENT RECOMMENDATIONS
+    # ═══════════════════════════════════════════════
+    story.append(HRFlowable(width=W, thickness=0.5, color=C_BORDER))
+    story.append(Spacer(1, 6))
+    title_label = "Crop Management Recommendations" if pred_class == 'Healthy' else "Field Management Steps"
+    story.append(Paragraph(title_label, st_section))
+
+    rec_rows = []
+    for i, (icon, text) in enumerate(info['recommendations']):
+        num = Paragraph(f"<b>{i+1}</b>", sty('RecNum', fontSize=9, textColor=C_ACCENT,
+                                               fontName='Helvetica-Bold', alignment=TA_CENTER))
+        body = Paragraph(text, st_body)
+        rec_rows.append([num, body])
+
+    rec_tbl = Table(rec_rows, colWidths=[10*mm, W - 10*mm])
+    rec_tbl.setStyle(TableStyle([
+        ('ROWBACKGROUNDS', (0,0),(-1,-1), [C_WHITE, C_LIGHT]),
+        ('VALIGN',         (0,0),(-1,-1), 'TOP'),
+        ('ALIGN',          (0,0),(0,-1),  'CENTER'),
+        ('LEFTPADDING',    (0,0),(-1,-1), 5),
+        ('RIGHTPADDING',   (0,0),(-1,-1), 5),
+        ('TOPPADDING',     (0,0),(-1,-1), 5),
+        ('BOTTOMPADDING',  (0,0),(-1,-1), 5),
+        ('GRID',           (0,0),(-1,-1), 0.3, C_BORDER),
+    ]))
+    story.append(rec_tbl)
+    story.append(Spacer(1, 4))
+    story.append(Paragraph(f"IPM Note: {info['ipm_note']}", st_muted))
+    story.append(Spacer(1, 10))
+
+    # ═══════════════════════════════════════════════
+    # FUNGICIDE TABLE  (skip for Healthy)
+    # ═══════════════════════════════════════════════
+    if info.get('fungicides'):
+        story.append(HRFlowable(width=W, thickness=0.5, color=C_BORDER))
+        story.append(Spacer(1, 6))
+        story.append(Paragraph("Recommended Fungicides", st_section))
+
+        fung_rows = [[
+            Paragraph("Product (Active Ingredient)", st_tbl_hdr),
+            Paragraph("Class", st_tbl_hdr),
+            Paragraph("Rate", st_tbl_hdr),
+            Paragraph("Timing", st_tbl_hdr),
+        ]]
+        for f in info['fungicides']:
+            fung_rows.append([
+                Paragraph(f['name'], st_tbl_cell_b),
+                Paragraph(f['type'], st_tbl_cell),
+                Paragraph(f['rate'], st_tbl_cell),
+                Paragraph(f['timing'], st_tbl_cell),
+            ])
+
+        fung_tbl = Table(fung_rows, colWidths=[W*0.33, W*0.18, W*0.16, W*0.33])
+        fung_tbl.setStyle(TableStyle([
+            ('BACKGROUND',    (0,0),(-1, 0), C_MID),
+            ('ROWBACKGROUNDS',(0,1),(-1,-1), [C_WHITE, C_LIGHT]),
+            ('GRID',          (0,0),(-1,-1), 0.4, C_BORDER),
+            ('VALIGN',        (0,0),(-1,-1), 'TOP'),
+            ('LEFTPADDING',   (0,0),(-1,-1), 6),
+            ('RIGHTPADDING',  (0,0),(-1,-1), 4),
+            ('TOPPADDING',    (0,0),(-1,-1), 5),
+            ('BOTTOMPADDING', (0,0),(-1,-1), 5),
+        ]))
+        story.append(fung_tbl)
+        story.append(Spacer(1, 4))
+        story.append(Paragraph(
+            "⚠ Always read and follow label instructions. Rotate chemical classes to prevent resistance. "
+            "Observe pre-harvest intervals (PHI) per your country's regulations.",
+            st_muted
+        ))
+        story.append(Spacer(1, 10))
+
+    # ═══════════════════════════════════════════════
+    # FOOTER
+    # ═══════════════════════════════════════════════
+    story.append(HRFlowable(width=W, thickness=0.5, color=C_BORDER))
+    story.append(Spacer(1, 4))
+    story.append(Paragraph(
+        f"Generated by MaizeGuard AI  |  {ts}  |  User: {username}  |  "
+        "For informational purposes only. Always consult a licensed agronomist.",
+        st_footer
+    ))
+
+    doc.build(story)
+    buf.seek(0)
+    return buf.read()
+
+
 # ── DASHBOARD PAGE ────────────────────────────────────────────────────────────
 def page_dashboard():
     model, device, model_loaded = load_model()
@@ -870,13 +1185,35 @@ def page_dashboard():
         )
 
         st.markdown("---")
-        st.download_button(
-            "📥 Download Full Report (.txt)",
-            data=report,
-            file_name=f"maizeguard_{uploaded.name.split('.')[0]}_{ts.replace(' ','_').replace(':','-')}.txt",
-            mime="text/plain",
-            use_container_width=True,
-        )
+        base_name = f"maizeguard_{uploaded.name.split('.')[0]}_{ts.replace(' ','_').replace(':','-')}"
+        dl1, dl2 = st.columns(2)
+        with dl1:
+            st.download_button(
+                "📄 Download Report (.txt)",
+                data=report,
+                file_name=f"{base_name}.txt",
+                mime="text/plain",
+                use_container_width=True,
+            )
+        with dl2:
+            with st.spinner("Building PDF…"):
+                pdf_bytes = generate_pdf_report(
+                    username=st.session_state.user['username'],
+                    filename=uploaded.name,
+                    pred_class=pred_class,
+                    confidence=confidence,
+                    all_probs=all_probs,
+                    info=info,
+                    ts=ts,
+                    uploaded_img=img,
+                )
+            st.download_button(
+                "📥 Download Report (.pdf)",
+                data=pdf_bytes,
+                file_name=f"{base_name}.pdf",
+                mime="application/pdf",
+                use_container_width=True,
+            )
 
 # ── MY PREDICTIONS PAGE ───────────────────────────────────────────────────────
 def page_my_predictions():
