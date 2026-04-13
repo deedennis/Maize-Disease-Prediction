@@ -54,3 +54,13 @@ git clone https://github.com/deedennis/Maize-Disease-Prediction.git
 cd Maize-Disease-Prediction
 pip install -r requirements.txt
 streamlit run app.py
+ 📸 Screenshots
+
+ 🏠 Home Page
+![Home](images/home.png)
+
+ 📤 Upload Image
+![Upload](images/upload.png)
+
+ 🔍 Prediction Result
+![Result](images/result.png)
